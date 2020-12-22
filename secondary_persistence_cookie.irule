@@ -1,0 +1,80 @@
+# 2020-12
+# F5 Networks
+# Peter Scheffler / Peter Maranian
+
+when LB_SELECTED priority 100 {
+
+    # moved to main branch
+    # using https://support.f5.com/csp/article/K6917 to create a cookie value
+    # then we encrypt the Base64 value 
+    # then we add it as a new cookie
+
+    # this cookie would then be read by the application, 
+    # then decrypted using the shared AES 128 bit key here,
+    # and the new cookie added to the request 
+    
+    set serverIP [LB::server addr]
+    set serverPort [LB::server port]
+    
+    log local0. "Selected: $serverIP"
+    
+    set octets [split $serverIP .]
+    set serverHex ""
+
+    foreach octet $octets {
+        set hexoctet [format %02X $octet]
+        log local0. "$octet / $hexoctet"
+        set serverHex "$hexoctet$serverHex"
+    }
+    log local0. "Server IP in Reverse Hex: $serverHex"
+
+    scan $serverHex %x reverseIP
+
+    log local0. "Server IP in Decimal: $reverseIP"
+    
+    set reversePort ""
+    set reverseHexPort ""
+
+    if { [string length $serverPort] < 3 } then {
+        set reverseHexPort [format %02X $serverPort]
+        set reverseHexPort "${reverseHexPort}00" 
+    } elseif { [string length $serverPort] < 5 } then {
+        set part1 [format %02X [string range $serverPort 2 3] ] 
+        set part2 [format %02X [string range $serverPort 0 1] ]
+
+        set reverseHexPort "${part1}${part2}"
+    } else {
+        set part1 [format %02X [string range $serverPort 4 4] ] 
+        log local0. "Part1: ${part1}"
+        set part2 [format %02X [string range $serverPort 2 3] ] 
+        set part3 [format %02X [string range $serverPort 0 1] ]
+
+        set reverseHexPort "${part1}${part2}${part3}"
+    }
+
+    log local0. "Reverse Server Port in Hex: $reverseHexPort"
+
+    scan "${reverseHexPort}" %x reversePort
+    log local0. "Reverse Port in Decimal: $reversePort"    
+
+    # todo - need to get the Route Domain for 3rd value
+    set cookie "${serverHex}.${reversePort}.0000"
+}
+
+when HTTP_RESPONSE {
+    # generate key from here: https://www.allkeysgenerator.com/Random/Security-Encryption-Key-Generator.aspx
+    # this could be changed to read from a iFile or a Datagroup
+    # storing a key in the iRule is bad, even for this level of information
+    set key "AES 128 5166546a576e5a7234753777217a2543"
+
+    # encrypt the cookie
+    set encryptedCookie [b64encode [AES::encrypt $key $cookie] ]
+
+    # add it as an encrypted cookie
+    HTTP::cookie insert name "ProtectedInfo" value $encryptedCookie
+
+    # for an example, add it as unencrypted as well
+    HTTP::cookie insert name "OpenInfo" value $cookie
+    
+}
+
